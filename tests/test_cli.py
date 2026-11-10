@@ -31,3 +31,28 @@ def test_generate_then_score(tmp_path, capsys):
 def test_score_missing_input_exits_with_hint(tmp_path):
     with pytest.raises(SystemExit, match="python -m risk_simulator generate"):
         main(["score", str(tmp_path / "missing.csv")])
+
+
+def test_validate_on_generated_portfolio(capsys):
+    main(["validate", "--generate", "3000", "--seed", "5"])
+    out = capsys.readouterr().out
+    assert "Rank-ordered: yes" in out
+    assert "Logistic regression" in out
+    assert "Suggested" in out
+
+
+def test_validate_requires_outcomes(tmp_path):
+    path = tmp_path / "no_outcomes.csv"
+    main(["generate", "--n", "50", "--out", str(path)])
+    path.write_text(
+        "\n".join(",".join(line.split(",")[:-1]) for line in path.read_text().splitlines())
+    )
+    with pytest.raises(SystemExit, match="needs a 'defaulted' column"):
+        main(["validate", str(path)])
+
+
+def test_score_reports_invalid_file(tmp_path):
+    path = tmp_path / "bad.csv"
+    path.write_text("annual_income,loan_amount\n50000,1000\n")
+    with pytest.raises(SystemExit, match="Missing required column"):
+        main(["score", str(path)])
