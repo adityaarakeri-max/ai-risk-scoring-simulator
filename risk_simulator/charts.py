@@ -136,7 +136,9 @@ def score_distribution(scored: pd.DataFrame, low_max: int, medium_max: int) -> a
         alt.Chart(counts)
         .mark_bar(width=5, cornerRadiusEnd=2)
         .encode(
-            x=alt.X("risk_score:Q", title="Risk score", scale=alt.Scale(domain=[0, 100])),
+            x=alt.X(
+                "risk_score:Q", title="Risk score", scale=alt.Scale(domain=[0, 100], nice=False)
+            ),
             y=alt.Y("applications:Q", title="Applications"),
             color=_band_color(),
             tooltip=[
