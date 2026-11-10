@@ -58,7 +58,7 @@ def _validate(args: argparse.Namespace) -> None:
     scored = pipeline.score_portfolio(df)
     overall = validation.discrimination(scored["defaulted"], scored["risk_score"])
     table = validation.band_table(scored)
-    bench = validation.benchmark(df, seed=args.seed)
+    bench = validation.benchmark(df)
 
     print(f"Validation on {source}, {df['defaulted'].mean():.1%} defaulted\n")
     print(f"Full sample   Gini {overall.gini:.3f}   AUC {overall.auc:.3f}   KS {overall.ks:.3f}\n")
