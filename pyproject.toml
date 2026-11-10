@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "risk-simulator"
+version = "0.2.0"
+description = "Rule-based credit-risk scoring with AI-generated explanations"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "anthropic>=0.39.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+risk-sim = "risk_simulator.cli:main"
+
+[tool.setuptools]
+packages = ["risk_simulator"]

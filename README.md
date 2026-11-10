@@ -20,24 +20,24 @@ explanations show up in real credit scoring and fraud detection pipelines.
 
 Three layers, each in its own module:
 
-1. **Rule-based layer** ([src/scoring.py](src/scoring.py)) — five independent
+1. **Rule-based layer** ([risk_simulator/scoring.py](risk_simulator/scoring.py)) — five independent
    checks against simple thresholds (e.g. "is the loan-to-income ratio above
    50%?").
-2. **Scoring layer** ([src/scoring.py](src/scoring.py)) — each rule
+2. **Scoring layer** ([risk_simulator/scoring.py](risk_simulator/scoring.py)) — each rule
    contributes weighted points; the total (0-100) maps to a **Low / Medium /
    High** risk band.
-3. **AI explanation layer** ([src/explain.py](src/explain.py)) — for every
+3. **AI explanation layer** ([risk_simulator/explain.py](risk_simulator/explain.py)) — for every
    High-risk application, calls the Claude API with the triggered risk
    factors and asks for a 1-2 sentence plain-English explanation.
 
 ```
-data/generate_data.py  →  synthetic_loans.csv
+risk_simulator/data.py  →  synthetic_loans.csv
                                │
                                ▼
-                    src/scoring.py (rules + points)
+               risk_simulator/scoring.py (rules + points)
                                │
                                ▼
-                 src/explain.py (Claude API, High-risk only)
+            risk_simulator/explain.py (Claude API, High-risk only)
                                │
                                ▼
                 output/risk_scored_results.csv
@@ -63,7 +63,7 @@ underwriting heuristics — not calibrated against real default data.
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e .
 cp .env.example .env   # then add your ANTHROPIC_API_KEY
 ```
 
@@ -73,8 +73,8 @@ summary built from the triggered rules, so the pipeline still runs end to end.
 ## Run
 
 ```bash
-python data/generate_data.py   # creates data/synthetic_loans.csv
-cd src && python main.py       # writes output/risk_scored_results.csv
+python -m risk_simulator generate   # creates data/synthetic_loans.csv
+python -m risk_simulator score      # writes output/risk_scored_results.csv
 ```
 
 ## Output

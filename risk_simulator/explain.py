@@ -10,7 +10,7 @@ is configured, so the pipeline still runs end-to-end without a key.
 
 import os
 
-from scoring import ScoredApplication
+from .scoring import ScoredApplication
 
 _client = None
 
