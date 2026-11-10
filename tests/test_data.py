@@ -1,6 +1,18 @@
-import pandas as pd
+import io
+import re
 
-from risk_simulator.data import COLUMNS, generate_portfolio, load_applications, write_csv
+import pandas as pd
+import pytest
+
+from risk_simulator.data import (
+    COLUMNS,
+    FEATURE_COLUMNS,
+    DataValidationError,
+    generate_portfolio,
+    load_applications,
+    validate_applications,
+    write_csv,
+)
 
 
 def test_same_seed_same_data():
@@ -45,3 +57,51 @@ def test_csv_round_trip(tmp_path):
     path = tmp_path / "apps.csv"
     write_csv(df, path)
     pd.testing.assert_frame_equal(load_applications(path), df)
+
+
+def _csv(text: str) -> io.StringIO:
+    return io.StringIO(text.strip() + "\n")
+
+
+VALID_ROW = "50000,10000,700,5,800,0"
+HEADER = ",".join(FEATURE_COLUMNS)
+
+
+def test_upload_without_ids_or_outcomes_is_accepted():
+    df = load_applications(_csv(f"{HEADER}\n{VALID_ROW}\n{VALID_ROW}"))
+    assert list(df["applicant_id"]) == [1, 2]
+    assert "defaulted" not in df.columns
+
+
+def test_extra_columns_are_dropped():
+    df = load_applications(_csv(f"{HEADER},notes\n{VALID_ROW},hello"))
+    assert "notes" not in df.columns
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ("", "Could not read"),
+        (HEADER, "no rows"),
+        ("annual_income,loan_amount\n50000,1000", "Missing required column(s): credit_score"),
+        (f"{HEADER}\n{VALID_ROW}\n50000,abc,700,5,800,0", "'loan_amount' must be numeric"),
+        (f"{HEADER}\n0,10000,700,5,800,0", "annual_income must be greater than zero"),
+        (f"{HEADER}\n50000,-5,700,5,800,0", "Negative values found in: loan_amount"),
+        (f"{HEADER}\n50000,10000,900,5,800,0", "credit_score must be between 300 and 850"),
+        (f"{HEADER},defaulted\n{VALID_ROW},2", "defaulted must be 0 or 1"),
+    ],
+)
+def test_invalid_uploads_get_clear_errors(text, message):
+    with pytest.raises(DataValidationError, match=re.escape(message)):
+        load_applications(_csv(text))
+
+
+def test_bad_value_error_reports_line_number():
+    with pytest.raises(DataValidationError, match="line 3"):
+        load_applications(_csv(f"{HEADER}\n{VALID_ROW}\n50000,abc,700,5,800,0"))
+
+
+def test_validate_does_not_mutate_input():
+    raw = pd.DataFrame([dict(zip(FEATURE_COLUMNS, [50000, 10000, 700, 5, 800, 0], strict=True))])
+    validate_applications(raw)
+    assert "applicant_id" not in raw.columns

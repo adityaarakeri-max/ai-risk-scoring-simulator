@@ -81,5 +81,53 @@ def write_csv(df: pd.DataFrame, path: Path) -> None:
     df.to_csv(path, index=False)
 
 
-def load_applications(path: Path) -> pd.DataFrame:
-    return pd.read_csv(path)
+class DataValidationError(ValueError):
+    pass
+
+
+_NON_NEGATIVE = ["loan_amount", "employment_years", "monthly_debt_payments", "delinquencies_2yr"]
+
+
+def validate_applications(df: pd.DataFrame) -> pd.DataFrame:
+    """Check an applications table and return a clean copy, or raise DataValidationError."""
+    if df.empty:
+        raise DataValidationError("The file has no rows.")
+
+    missing = [c for c in FEATURE_COLUMNS if c not in df.columns]
+    if missing:
+        raise DataValidationError(f"Missing required column(s): {', '.join(missing)}.")
+
+    df = df.copy()
+    optional = [c for c in ("defaulted",) if c in df.columns]
+    for col in FEATURE_COLUMNS + optional:
+        numeric = pd.to_numeric(df[col], errors="coerce")
+        bad = numeric.isna()
+        if bad.any():
+            row = int(bad.idxmax()) + 2  # +1 for the header line, +1 for 1-based rows
+            raise DataValidationError(
+                f"Column '{col}' must be numeric; found {df[col][bad].iloc[0]!r} on line {row}."
+            )
+        df[col] = numeric
+
+    if (df["annual_income"] <= 0).any():
+        raise DataValidationError("annual_income must be greater than zero for every row.")
+    negative = [c for c in _NON_NEGATIVE if (df[c] < 0).any()]
+    if negative:
+        raise DataValidationError(f"Negative values found in: {', '.join(negative)}.")
+    if not df["credit_score"].between(300, 850).all():
+        raise DataValidationError("credit_score must be between 300 and 850.")
+    if "defaulted" in df.columns and not df["defaulted"].isin([0, 1]).all():
+        raise DataValidationError("defaulted must be 0 or 1.")
+
+    if "applicant_id" not in df.columns:
+        df.insert(0, "applicant_id", range(1, len(df) + 1))
+    return df[[c for c in COLUMNS if c in df.columns]]
+
+
+def load_applications(source) -> pd.DataFrame:
+    """Read a CSV from a path or file-like object and validate it."""
+    try:
+        df = pd.read_csv(source)
+    except (pd.errors.EmptyDataError, pd.errors.ParserError, UnicodeDecodeError) as exc:
+        raise DataValidationError(f"Could not read the file as CSV ({exc}).") from exc
+    return validate_applications(df)
