@@ -117,7 +117,7 @@ def policy_sidebar() -> tuple:
             st.slider(
                 factor.label,
                 0,
-                50,
+                100,
                 key=f"w_{factor.key}",
                 help=f"{factor.reason_code}: {factor.reason}",
             )
@@ -430,6 +430,133 @@ def portfolio_tab(weights: tuple, low_max: int, medium_max: int) -> None:
     explanation_panel(scored_one, key=f"portfolio_{applicant_id}")
 
 
+@st.cache_data
+def validation_results(df: pd.DataFrame, weights: tuple, low_max: int, medium_max: int):
+    scorecard = build_scorecard(weights, low_max, medium_max)
+    scored = pipeline.score_portfolio(df, scorecard)
+    overall = validation.discrimination(scored["defaulted"], scored["risk_score"])
+    return overall, validation.band_table(scored), validation.benchmark(df, scorecard)
+
+
+def apply_weights(weights: dict) -> None:
+    for key, points in weights.items():
+        st.session_state[f"w_{key}"] = points
+
+
+def validation_tab(weights: tuple, low_max: int, medium_max: int, mode: str) -> None:
+    df, source = st.session_state.get("portfolio", (None, ""))
+    if df is None or "defaulted" not in df.columns:
+        st.info(
+            "Validation compares scores with what actually happened, so it needs a "
+            "'defaulted' column. Pick the sample file or simulate a portfolio in the "
+            "portfolio tab, or upload a file that includes outcomes.",
+            icon=":material/info:",
+        )
+        return
+    defaults = int(df["defaulted"].sum())
+    if defaults == 0 or defaults == len(df):
+        st.error("The file needs both defaulted and repaid applications to measure anything.")
+        return
+
+    overall, table, bench = validation_results(df, weights, low_max, medium_max)
+    rank_ordered = validation.is_rank_ordered(table)
+
+    st.caption(
+        f"Testing the sidebar policy on {source}: {defaults:,} defaults among "
+        f"{len(df):,} applications."
+    )
+    if defaults < 100:
+        st.warning(
+            f"Only {defaults} defaults in this data, so these figures will move a lot "
+            "between samples. Simulate a larger portfolio for steadier results.",
+            icon=":material/warning:",
+        )
+
+    cols = st.columns(4)
+    cols[0].metric(
+        "Gini",
+        f"{overall.gini:.2f}",
+        help="How well scores rank defaulters above repayers: 0 is random, 1 is perfect. "
+        "Simple application scorecards often land around 0.4-0.6.",
+    )
+    cols[1].metric(
+        "KS",
+        f"{overall.ks:.2f}",
+        help="The biggest gap between the score distributions of defaulters and repayers.",
+    )
+    cols[2].metric(
+        "AUC",
+        f"{overall.auc:.2f}",
+        help="Chance a random defaulter scores higher than a random repayer.",
+    )
+    with cols[3]:
+        st.markdown("**Rank-ordered**")
+        if rank_ordered:
+            st.badge("Yes: default rate rises by band", icon=":material/check:", color="green")
+        else:
+            st.badge("No: bands are out of order", icon=":material/error:", color="red")
+
+    rate_col, roc_col = st.columns(2, gap="large")
+    with rate_col:
+        st.subheader("Default rate by band")
+        st.altair_chart(charts.default_rate_by_band(table, mode), width="stretch")
+    with roc_col:
+        st.subheader("Scorecard vs challenger")
+        labels = {"scorecard": "Your scorecard", "logistic": "Logistic regression"}
+        st.altair_chart(charts.roc_curves(bench.test_scores, labels, mode), width="stretch")
+        st.caption(
+            f"ROC curves on a {bench.test_size:,}-application hold-out set the "
+            "challenger never trained on. Higher and further left is better."
+        )
+
+    st.subheader("What the data says about your weights")
+    st.write(
+        "A logistic regression fitted on the same five factors shows how much each one "
+        "actually separates defaulters. Its weights are rescaled to 100 points below."
+    )
+    g = st.columns(3)
+    g[0].metric("Your scorecard (hold-out Gini)", f"{bench.scorecard.gini:.3f}")
+    g[1].metric(
+        "With suggested weights",
+        f"{bench.reweighted.gini:.3f}",
+        delta=f"{bench.reweighted.gini - bench.scorecard.gini:+.3f}",
+    )
+    g[2].metric(
+        "Logistic regression",
+        f"{bench.logistic.gini:.3f}",
+        delta=f"{bench.logistic.gini - bench.scorecard.gini:+.3f}",
+    )
+
+    current = dict(weights)
+    chart_col, table_col = st.columns([3, 2], gap="large")
+    with chart_col:
+        st.altair_chart(charts.weights_comparison(bench.weights, current, mode), width="stretch")
+    with table_col:
+        st.dataframe(
+            pd.DataFrame(
+                {
+                    "Factor": bench.weights["label"],
+                    "Current": [current[k] for k in bench.weights.index],
+                    "Suggested": bench.weights["suggested_points"],
+                    "Direction agrees": bench.weights["direction_agrees"],
+                }
+            ),
+            hide_index=True,
+        )
+        st.button(
+            "Apply suggested weights",
+            on_click=apply_weights,
+            args=(bench.suggested_weights,),
+            icon=":material/tune:",
+            type="primary",
+        )
+    st.caption(
+        "The data is simulated from a known risk model, so this demonstrates the method "
+        "rather than real-world performance. With small samples the suggested weights "
+        "can do worse than the originals on the hold-out set."
+    )
+
+
 def main() -> None:
     st.set_page_config(
         page_title="AI risk-scoring simulator",
@@ -449,11 +576,15 @@ def main() -> None:
     scorecard = build_scorecard(weights, low_max, medium_max)
     mode = st.context.theme.type or "light"
 
-    tab_applicant, tab_portfolio = st.tabs(["Score an applicant", "Score a portfolio"])
+    tab_applicant, tab_portfolio, tab_validation = st.tabs(
+        ["Score an applicant", "Score a portfolio", "Validate the scorecard"]
+    )
     with tab_applicant:
         applicant_tab(scorecard, mode)
     with tab_portfolio:
         portfolio_tab(weights, low_max, medium_max)
+    with tab_validation:
+        validation_tab(weights, low_max, medium_max, mode)
 
 
 main()
