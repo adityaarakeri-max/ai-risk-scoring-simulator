@@ -7,7 +7,7 @@ name = "risk-simulator"
 version = "0.2.0"
 description = "Rule-based credit-risk scoring with AI-generated explanations"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "anthropic>=0.39.0",
     "python-dotenv>=1.0.0",
@@ -24,7 +24,7 @@ packages = ["risk_simulator"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM"]
