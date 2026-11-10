@@ -1,113 +1,184 @@
-"""Rule-based + points-based risk scoring for loan applications.
+"""Rule-based, points-based risk scoring for loan applications.
 
-Layer 1 (rule-based): each factor is evaluated against simple thresholds.
-Layer 2 (scoring): the points from every factor are summed into a 0-100
-score, which is mapped to a Low / Medium / High risk band.
+Layer 1 (rules): each factor's measured value is checked against tiered thresholds.
+Layer 2 (score): the points are summed, normalised to 0-100 and mapped to a risk band.
+
+The thresholds, points and band cutoffs live in a `Scorecard`, so a risk team
+can tune policy without touching the scoring logic.
 """
 
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 
 
-@dataclass
-class FactorResult:
-    name: str
-    points: int
+@dataclass(frozen=True)
+class Factor:
+    key: str
+    label: str
+    reason_code: str
     reason: str
+    measure: Callable[[dict], float]
+    tiers: tuple  # ((threshold, points), ...) ordered riskiest first
+    higher_is_riskier: bool = True
+    value_format: str = "{:.2f}"
+
+    @property
+    def max_points(self) -> int:
+        return max(points for _, points in self.tiers)
+
+    def points_for(self, value: float) -> int:
+        for threshold, points in self.tiers:
+            breached = value > threshold if self.higher_is_riskier else value < threshold
+            if breached:
+                return points
+        return 0
+
+    def with_max_points(self, max_points: int) -> "Factor":
+        scale = max_points / self.max_points
+        return replace(self, tiers=tuple((t, round(p * scale)) for t, p in self.tiers))
 
 
-@dataclass
+@dataclass(frozen=True)
+class FactorResult:
+    key: str
+    label: str
+    value: float
+    points: int
+    max_points: int
+    reason_code: str
+    reason: str
+    display_value: str
+
+
+@dataclass(frozen=True)
 class ScoredApplication:
-    applicant_id: int
+    applicant_id: int | None
     score: int
     risk_band: str
-    factors: list = field(default_factory=list)
+    factors: tuple
 
-    def triggered_reasons(self) -> list:
-        """Reasons for every factor that contributed risk points (points > 0)."""
-        return [f.reason for f in self.factors if f.points > 0]
-
-
-def score_loan_to_income(record: dict) -> FactorResult:
-    ratio = record["loan_amount"] / record["annual_income"]
-    if ratio > 0.5:
-        return FactorResult("loan_to_income", 25, f"Loan-to-income ratio is very high ({ratio:.2f})")
-    if ratio > 0.3:
-        return FactorResult("loan_to_income", 15, f"Loan-to-income ratio is elevated ({ratio:.2f})")
-    if ratio > 0.15:
-        return FactorResult("loan_to_income", 5, f"Loan-to-income ratio is moderate ({ratio:.2f})")
-    return FactorResult("loan_to_income", 0, f"Loan-to-income ratio is low ({ratio:.2f})")
+    def principal_reasons(self, limit: int = 4) -> list:
+        """Factors that added risk, largest contribution first (adverse-action style)."""
+        contributing = [f for f in self.factors if f.points > 0]
+        return sorted(contributing, key=lambda f: f.points, reverse=True)[:limit]
 
 
-def score_credit_score(record: dict) -> FactorResult:
-    credit_score = record["credit_score"]
-    if credit_score < 580:
-        return FactorResult("credit_score", 25, f"Credit score is poor ({credit_score})")
-    if credit_score < 670:
-        return FactorResult("credit_score", 15, f"Credit score is fair ({credit_score})")
-    if credit_score < 740:
-        return FactorResult("credit_score", 5, f"Credit score is good ({credit_score})")
-    return FactorResult("credit_score", 0, f"Credit score is excellent ({credit_score})")
+def _loan_to_income(r: dict) -> float:
+    return r["loan_amount"] / r["annual_income"]
 
 
-def score_employment_history(record: dict) -> FactorResult:
-    years = record["employment_years"]
-    if years < 1:
-        return FactorResult("employment_years", 20, f"Employment history is very short ({years} yrs)")
-    if years < 3:
-        return FactorResult("employment_years", 10, f"Employment history is short ({years} yrs)")
-    if years < 7:
-        return FactorResult("employment_years", 5, f"Employment history is moderate ({years} yrs)")
-    return FactorResult("employment_years", 0, f"Employment history is long ({years} yrs)")
+def _debt_to_income(r: dict) -> float:
+    return r["monthly_debt_payments"] * 12 / r["annual_income"]
 
 
-def score_debt_to_income(record: dict) -> FactorResult:
-    annual_debt = record["monthly_debt_payments"] * 12
-    dti = annual_debt / record["annual_income"]
-    if dti > 0.43:
-        return FactorResult("debt_to_income", 20, f"Debt-to-income ratio is very high ({dti:.2f})")
-    if dti > 0.3:
-        return FactorResult("debt_to_income", 10, f"Debt-to-income ratio is elevated ({dti:.2f})")
-    if dti > 0.15:
-        return FactorResult("debt_to_income", 5, f"Debt-to-income ratio is moderate ({dti:.2f})")
-    return FactorResult("debt_to_income", 0, f"Debt-to-income ratio is low ({dti:.2f})")
+DEFAULT_FACTORS = (
+    Factor(
+        key="loan_to_income",
+        label="Loan-to-income ratio",
+        reason_code="R01",
+        reason="Loan amount is high relative to income",
+        measure=_loan_to_income,
+        tiers=((0.5, 25), (0.3, 15), (0.15, 5)),
+    ),
+    Factor(
+        key="credit_score",
+        label="Credit score",
+        reason_code="R02",
+        reason="Credit score is below the preferred range",
+        measure=lambda r: r["credit_score"],
+        tiers=((580, 25), (670, 15), (740, 5)),
+        higher_is_riskier=False,
+        value_format="{:.0f}",
+    ),
+    Factor(
+        key="employment_years",
+        label="Employment history",
+        reason_code="R03",
+        reason="Limited length of employment",
+        measure=lambda r: r["employment_years"],
+        tiers=((1, 20), (3, 10), (7, 5)),
+        higher_is_riskier=False,
+        value_format="{:.1f} yrs",
+    ),
+    Factor(
+        key="debt_to_income",
+        label="Debt-to-income ratio",
+        reason_code="R04",
+        reason="Existing debt payments are high relative to income",
+        measure=_debt_to_income,
+        tiers=((0.43, 20), (0.3, 10), (0.15, 5)),
+    ),
+    Factor(
+        key="delinquencies_2yr",
+        label="Delinquencies (2 yrs)",
+        reason_code="R05",
+        reason="Recent delinquent payments on file",
+        measure=lambda r: r["delinquencies_2yr"],
+        tiers=((2, 10), (0, 5)),
+        value_format="{:.0f}",
+    ),
+)
+
+BANDS = ("Low", "Medium", "High")
 
 
-def score_delinquencies(record: dict) -> FactorResult:
-    count = record["delinquencies_2yr"]
-    if count >= 3:
-        return FactorResult("delinquencies_2yr", 10, f"{count} delinquencies in the last 2 years")
-    if count >= 1:
-        return FactorResult("delinquencies_2yr", 5, f"{count} delinquency(ies) in the last 2 years")
-    return FactorResult("delinquencies_2yr", 0, "No delinquencies in the last 2 years")
+@dataclass(frozen=True)
+class Scorecard:
+    factors: tuple = DEFAULT_FACTORS
+    low_max: int = 34
+    medium_max: int = 64
+
+    def __post_init__(self):
+        if not 0 <= self.low_max < self.medium_max < 100:
+            raise ValueError("Band cutoffs must satisfy 0 <= low_max < medium_max < 100")
+
+    @property
+    def max_points(self) -> int:
+        return sum(f.max_points for f in self.factors)
+
+    def band_for(self, score: int) -> str:
+        if score <= self.low_max:
+            return "Low"
+        if score <= self.medium_max:
+            return "Medium"
+        return "High"
+
+    def with_weights(self, weights: dict) -> "Scorecard":
+        """Rescale factors to new maximum points, e.g. {"credit_score": 40}."""
+        factors = tuple(
+            f.with_max_points(weights[f.key]) if f.key in weights else f for f in self.factors
+        )
+        return replace(self, factors=factors)
+
+    def score(self, record: dict) -> ScoredApplication:
+        results = []
+        for factor in self.factors:
+            value = factor.measure(record)
+            results.append(
+                FactorResult(
+                    key=factor.key,
+                    label=factor.label,
+                    value=value,
+                    points=factor.points_for(value),
+                    max_points=factor.max_points,
+                    reason_code=factor.reason_code,
+                    reason=factor.reason,
+                    display_value=factor.value_format.format(value),
+                )
+            )
+
+        raw = sum(r.points for r in results)
+        score = round(100 * raw / self.max_points) if self.max_points else 0
+        return ScoredApplication(
+            applicant_id=record.get("applicant_id"),
+            score=score,
+            risk_band=self.band_for(score),
+            factors=tuple(results),
+        )
 
 
-RISK_FACTORS = [
-    score_loan_to_income,
-    score_credit_score,
-    score_employment_history,
-    score_debt_to_income,
-    score_delinquencies,
-]
-
-# Score is out of 100 (sum of each factor's max points: 25+25+20+20+10).
-LOW_RISK_MAX = 34
-MEDIUM_RISK_MAX = 64
+DEFAULT_SCORECARD = Scorecard()
 
 
-def risk_band_for(score: int) -> str:
-    if score <= LOW_RISK_MAX:
-        return "Low"
-    if score <= MEDIUM_RISK_MAX:
-        return "Medium"
-    return "High"
-
-
-def score_application(record: dict) -> ScoredApplication:
-    factors = [factor_fn(record) for factor_fn in RISK_FACTORS]
-    total_score = sum(f.points for f in factors)
-    return ScoredApplication(
-        applicant_id=record["applicant_id"],
-        score=total_score,
-        risk_band=risk_band_for(total_score),
-        factors=factors,
-    )
+def score_application(record: dict, scorecard: Scorecard = DEFAULT_SCORECARD) -> ScoredApplication:
+    return scorecard.score(record)

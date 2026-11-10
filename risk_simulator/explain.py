@@ -30,8 +30,15 @@ def _get_client():
     return _client
 
 
+def _reason_lines(scored: ScoredApplication) -> list:
+    return [
+        f"{f.reason.lower()} ({f.label.lower()} {f.display_value})"
+        for f in scored.principal_reasons()
+    ]
+
+
 def _fallback_explanation(scored: ScoredApplication) -> str:
-    reasons = scored.triggered_reasons()
+    reasons = _reason_lines(scored)
     if not reasons:
         return "Flagged High risk by the combined score, though no single factor stood out."
     return "Flagged High risk mainly due to: " + "; ".join(reasons) + "."
@@ -42,7 +49,7 @@ def generate_explanation(scored: ScoredApplication) -> str:
     if client is None:
         return _fallback_explanation(scored)
 
-    reasons = scored.triggered_reasons()
+    reasons = _reason_lines(scored)
     prompt = (
         "You are assisting a loan risk team. An application scored "
         f"{scored.score}/100 and was flagged High risk based on these factors: "
