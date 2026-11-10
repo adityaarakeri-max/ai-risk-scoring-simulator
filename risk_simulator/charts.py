@@ -15,8 +15,20 @@ from .validation import roc_points
 STATUS = {"Low": "#0ca30c", "Medium": "#fab219", "High": "#d03b3b"}
 
 PALETTES = {
-    "light": {"series": ("#2a78d6", "#eb6834"), "muted": "#898781", "track": "#e1e0d9"},
-    "dark": {"series": ("#3987e5", "#d95926"), "muted": "#898781", "track": "#383835"},
+    "light": {
+        "series": ("#2a78d6", "#eb6834"),
+        "ink": "#0b0b0b",
+        "ink_secondary": "#52514e",
+        "muted": "#898781",
+        "track": "#e1e0d9",
+    },
+    "dark": {
+        "series": ("#3987e5", "#d95926"),
+        "ink": "#f0efec",
+        "ink_secondary": "#c3c2b7",
+        "muted": "#898781",
+        "track": "#383835",
+    },
 }
 
 
@@ -32,7 +44,8 @@ def _band_color() -> alt.Color:
     )
 
 
-def score_meter(score: int, low_max: int, medium_max: int) -> alt.LayerChart:
+def score_meter(score: int, low_max: int, medium_max: int, mode: str = "light") -> alt.LayerChart:
+    colors = _palette(mode)
     zones = pd.DataFrame(
         {
             "risk_band": list(BANDS),
@@ -49,7 +62,7 @@ def score_meter(score: int, low_max: int, medium_max: int) -> alt.LayerChart:
 
     bands = (
         alt.Chart(zones)
-        .mark_bar(height=14, opacity=0.85)
+        .mark_bar(height=16)
         .encode(
             x=x,
             x2="end:Q",
@@ -59,22 +72,19 @@ def score_meter(score: int, low_max: int, medium_max: int) -> alt.LayerChart:
     )
     labels = (
         alt.Chart(zones)
-        .mark_text(dy=22, fontSize=12)
+        .mark_text(dy=22, fontSize=12, color=colors["ink_secondary"])
         .encode(x=alt.X("mid:Q", scale=alt.Scale(domain=[0, 101]), axis=None), text="label:N")
         .transform_calculate(mid="(datum.start + datum.end) / 2")
     )
-    marker_data = pd.DataFrame({"score": [score + 0.5], "text": [f"{score}"]})
     marker = (
-        alt.Chart(marker_data)
-        .mark_tick(thickness=3, size=30)
-        .encode(x=alt.X("score:Q", scale=alt.Scale(domain=[0, 101]), axis=None))
+        alt.Chart(pd.DataFrame({"score": [score + 0.5], "label": [f"Score {score}"]}))
+        .mark_tick(thickness=3, size=30, color=colors["ink"])
+        .encode(
+            x=alt.X("score:Q", scale=alt.Scale(domain=[0, 101]), axis=None),
+            tooltip=[alt.Tooltip("label:N", title="This applicant")],
+        )
     )
-    marker_label = (
-        alt.Chart(marker_data)
-        .mark_text(dy=-22, fontSize=13, fontWeight="bold")
-        .encode(x=alt.X("score:Q", scale=alt.Scale(domain=[0, 101]), axis=None), text="text:N")
-    )
-    return alt.layer(bands, labels, marker, marker_label).properties(height=80)
+    return alt.layer(bands, labels, marker).properties(height=70)
 
 
 def factor_contributions(scored: ScoredApplication, mode: str = "light") -> alt.LayerChart:
@@ -90,6 +100,7 @@ def factor_contributions(scored: ScoredApplication, mode: str = "light") -> alt.
     )
     data["label"] = data["points"].astype(str) + " / " + data["max_points"].astype(str)
     y = alt.Y("factor:N", sort=None, title=None, axis=alt.Axis(labelLimit=200))
+    axis = alt.Axis(tickCount=5, title="Risk points")
     tooltip = [
         alt.Tooltip("factor:N", title="Factor"),
         alt.Tooltip("value:N", title="Value"),
@@ -100,17 +111,21 @@ def factor_contributions(scored: ScoredApplication, mode: str = "light") -> alt.
     track = (
         alt.Chart(data)
         .mark_bar(color=colors["track"], cornerRadiusEnd=4, height=16)
-        .encode(x=alt.X("max_points:Q", title="Risk points"), y=y, tooltip=tooltip)
+        .encode(
+            x=alt.X("max_points:Q", axis=axis),
+            y=y,
+            tooltip=tooltip,
+        )
     )
     filled = (
         alt.Chart(data)
         .mark_bar(color=colors["series"][0], cornerRadiusEnd=4, height=16)
-        .encode(x="points:Q", y=y, tooltip=tooltip)
+        .encode(x=alt.X("points:Q", axis=axis), y=y, tooltip=tooltip)
     )
     text = (
         alt.Chart(data)
-        .mark_text(align="left", dx=6, fontSize=12)
-        .encode(x="max_points:Q", y=y, text="label:N")
+        .mark_text(align="left", dx=6, fontSize=12, color=colors["ink_secondary"])
+        .encode(x=alt.X("max_points:Q", axis=axis), y=y, text="label:N")
     )
     return alt.layer(track, filled, text).properties(height=200)
 
@@ -134,13 +149,14 @@ def score_distribution(scored: pd.DataFrame, low_max: int, medium_max: int) -> a
     cutoffs = pd.DataFrame({"x": [low_max + 0.5, medium_max + 0.5]})
     rules = (
         alt.Chart(cutoffs)
-        .mark_rule(strokeDash=[4, 4], color=PALETTES["light"]["muted"])
+        .mark_rule(strokeDash=[4, 4], color=PALETTES["light"]["muted"], strokeWidth=1)
         .encode(x="x:Q")
     )
     return alt.layer(bars, rules).properties(height=280)
 
 
-def default_rate_by_band(table: pd.DataFrame) -> alt.LayerChart:
+def default_rate_by_band(table: pd.DataFrame, mode: str = "light") -> alt.LayerChart:
+    colors = _palette(mode)
     data = table.reset_index(names="risk_band").dropna(subset=["default_rate"])
     data["label"] = (data["default_rate"] * 100).round(1).astype(str) + "%"
     x = alt.X("risk_band:N", sort=list(BANDS), title=None, axis=alt.Axis(labelAngle=0))
@@ -161,7 +177,7 @@ def default_rate_by_band(table: pd.DataFrame) -> alt.LayerChart:
     )
     text = (
         alt.Chart(data)
-        .mark_text(dy=-8, fontSize=12)
+        .mark_text(dy=-8, fontSize=12, color=colors["ink_secondary"])
         .encode(x=x, y="default_rate:Q", text="label:N")
     )
     return alt.layer(bars, text).properties(height=260)
