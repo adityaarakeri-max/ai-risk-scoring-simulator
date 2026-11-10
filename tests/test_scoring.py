@@ -88,9 +88,7 @@ def test_reweighting_keeps_score_on_0_to_100_scale(applicant):
 
 
 def test_principal_reasons_ranked_by_contribution(applicant):
-    scored = score_application(
-        applicant(credit_score=600, loan_amount=60_000, delinquencies_2yr=1)
-    )
+    scored = score_application(applicant(credit_score=600, loan_amount=60_000, delinquencies_2yr=1))
     codes = [r.reason_code for r in scored.principal_reasons()]
     assert codes == ["R01", "R02", "R05"]
 
