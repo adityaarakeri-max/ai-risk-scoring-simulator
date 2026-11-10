@@ -3,13 +3,17 @@
 import datetime as dt
 import json
 import os
+from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 from streamlit.errors import StreamlitSecretNotFoundError
 
-from risk_simulator import charts, explain
-from risk_simulator.scoring import DEFAULT_SCORECARD, Scorecard
+from risk_simulator import charts, data, explain, pipeline, validation
+from risk_simulator.scoring import BANDS, DEFAULT_SCORECARD, Scorecard
+
+SAMPLE_PATH = Path(__file__).parent / "data" / "sample_applications.csv"
 
 SESSION_AI_LIMIT = 10
 DAILY_AI_LIMIT = 200
@@ -165,7 +169,7 @@ def applicant_inputs() -> dict:
     return {field: st.session_state[f"in_{field}"] for field in EXAMPLES["Typical"]}
 
 
-def explanation_panel(scored) -> None:
+def explanation_panel(scored, key: str) -> None:
     st.subheader("Explanation")
     payload_key = json.dumps(explain.explanation_payload(scored), sort_keys=True)
     ai_text = st.session_state.ai_texts.get(payload_key)
@@ -186,6 +190,7 @@ def explanation_panel(scored) -> None:
     budget = ai_budget_left()
     if st.button(
         "Explain with Claude",
+        key=f"explain_{key}",
         icon=":material/auto_awesome:",
         disabled=budget == 0,
         help="Claude rewrites the reasons in plain English. It can't change the score.",
@@ -234,7 +239,7 @@ def applicant_tab(scorecard: Scorecard, mode: str) -> None:
         else:
             st.write("No risk factors were triggered.")
 
-        explanation_panel(scored)
+        explanation_panel(scored, key="applicant")
 
     st.subheader("Where the points came from")
     st.altair_chart(charts.factor_contributions(scored, mode), width="stretch")
@@ -252,6 +257,177 @@ def applicant_tab(scorecard: Scorecard, mode: str) -> None:
             ],
             hide_index=True,
         )
+
+
+@st.cache_data
+def sample_portfolio() -> pd.DataFrame:
+    return data.load_applications(SAMPLE_PATH)
+
+
+@st.cache_data
+def simulated_portfolio(n: int, seed: int) -> pd.DataFrame:
+    return data.generate_portfolio(n=n, seed=seed)
+
+
+@st.cache_data
+def scored_portfolio(df: pd.DataFrame, weights: tuple, low_max: int, medium_max: int):
+    return pipeline.score_portfolio(df, build_scorecard(weights, low_max, medium_max))
+
+
+def template_csv() -> bytes:
+    return sample_portfolio().drop(columns=["defaulted"]).head(5).to_csv(index=False).encode()
+
+
+def portfolio_source() -> tuple:
+    """Returns (applications DataFrame or None, a short description of the source)."""
+    choice = st.segmented_control(
+        "Applications",
+        ["Sample file", "Simulate a portfolio", "Upload a CSV"],
+        default="Sample file",
+        key="source",
+    )
+    if choice == "Simulate a portfolio":
+        size_col, seed_col = st.columns([3, 1])
+        n = size_col.slider("Number of applications", 500, 20_000, 5_000, step=500, key="sim_n")
+        seed = seed_col.number_input("Random seed", 0, 9_999, 42, key="sim_seed")
+        return simulated_portfolio(n, seed), f"{n:,} simulated applications (seed {seed})"
+
+    if choice == "Upload a CSV":
+        st.download_button(
+            "Download a template",
+            template_csv(),
+            file_name="applications_template.csv",
+            mime="text/csv",
+            icon=":material/download:",
+        )
+        upload = st.file_uploader(
+            "CSV with annual_income, loan_amount, credit_score, employment_years, "
+            "monthly_debt_payments and delinquencies_2yr. Add a 0/1 'defaulted' column "
+            "to unlock validation.",
+            type="csv",
+            key="upload",
+        )
+        if upload is None:
+            return None, ""
+        try:
+            return data.load_applications(upload), upload.name
+        except data.DataValidationError as exc:
+            st.error(f"{upload.name}: {exc}")
+            return None, ""
+
+    return sample_portfolio(), "the 1,000-application sample file"
+
+
+def portfolio_tab(weights: tuple, low_max: int, medium_max: int) -> None:
+    df, source = portfolio_source()
+    st.session_state.portfolio = (df, source)
+    if df is None:
+        st.info("Upload a CSV to score it, or pick the sample file.", icon=":material/upload:")
+        return
+
+    scorecard = build_scorecard(weights, low_max, medium_max)
+    scored = scored_portfolio(df, weights, low_max, medium_max)
+    has_outcomes = "defaulted" in scored.columns
+    counts = scored["risk_band"].value_counts()
+
+    kpis = st.columns(4)
+    kpis[0].metric("Applications", f"{len(scored):,}")
+    kpis[1].metric("Rated High risk", f"{counts.get('High', 0) / len(scored):.1%}")
+    kpis[2].metric("Average score", f"{scored['risk_score'].mean():.1f}")
+    if has_outcomes:
+        kpis[3].metric("Observed default rate", f"{scored['defaulted'].mean():.1%}")
+    else:
+        kpis[3].metric("Observed default rate", "Not in file")
+    st.caption(f"Scoring {source} with the policy in the sidebar.")
+
+    chart_col, table_col = st.columns([3, 2], gap="large")
+    with chart_col:
+        st.subheader("Score distribution")
+        st.altair_chart(charts.score_distribution(scored, low_max, medium_max), width="stretch")
+    with table_col:
+        st.subheader("By band")
+        summary = pd.DataFrame(
+            {
+                "Applications": [int(counts.get(b, 0)) for b in BANDS],
+                "Share": [counts.get(b, 0) / len(scored) for b in BANDS],
+            },
+            index=list(BANDS),
+        )
+        if has_outcomes:
+            summary["Default rate"] = validation.band_table(scored)["default_rate"]
+        st.dataframe(
+            summary,
+            column_config={
+                "Share": st.column_config.NumberColumn(format="percent"),
+                "Default rate": st.column_config.NumberColumn(format="percent"),
+            },
+        )
+
+    st.subheader("Applications")
+    bands = st.pills(
+        "Show bands", list(BANDS), selection_mode="multi", default=["High"], key="band_filter"
+    )
+    shown = scored[scored["risk_band"].isin(bands or BANDS)]
+    columns = [
+        "applicant_id",
+        "risk_score",
+        "risk_band",
+        "reason_codes",
+        "annual_income",
+        "loan_amount",
+        "credit_score",
+        "employment_years",
+        "monthly_debt_payments",
+        "delinquencies_2yr",
+    ] + (["defaulted"] if has_outcomes else [])
+    st.dataframe(
+        shown[columns].sort_values("risk_score", ascending=False),
+        hide_index=True,
+        height=300,
+        column_config={
+            "risk_score": st.column_config.ProgressColumn(
+                "Risk score", min_value=0, max_value=100, format="%d"
+            ),
+            "reason_codes": st.column_config.TextColumn("Reason codes"),
+            "applicant_id": st.column_config.NumberColumn("ID", format="%d"),
+            "risk_band": "Band",
+            "annual_income": st.column_config.NumberColumn("Income", format="localized"),
+            "loan_amount": st.column_config.NumberColumn("Loan", format="localized"),
+            "credit_score": "Credit score",
+            "employment_years": st.column_config.NumberColumn("Years employed", format="%.1f"),
+            "monthly_debt_payments": st.column_config.NumberColumn(
+                "Monthly debt", format="localized"
+            ),
+            "delinquencies_2yr": "Missed payments",
+            "defaulted": st.column_config.CheckboxColumn("Defaulted"),
+        },
+    )
+    st.download_button(
+        "Download scored results",
+        scored.to_csv(index=False).encode(),
+        file_name="risk_scored_results.csv",
+        mime="text/csv",
+        icon=":material/download:",
+    )
+
+    if shown.empty:
+        return
+    st.subheader("Inspect an application")
+    ordered = shown.sort_values("risk_score", ascending=False)
+    applicant_id = st.selectbox(
+        "Applicant",
+        ordered["applicant_id"],
+        format_func=lambda i: f"#{i}",
+        key="inspect_id",
+    )
+    record = df[df["applicant_id"] == applicant_id].iloc[0].to_dict()
+    scored_one = scorecard.score(record)
+    reasons = scored_one.principal_reasons()
+    st.markdown(
+        f"**#{applicant_id}: {scored_one.score}/100, {scored_one.risk_band} risk.** "
+        + (" ".join(f"`{r.reason_code}`" for r in reasons) or "No reason codes.")
+    )
+    explanation_panel(scored_one, key=f"portfolio_{applicant_id}")
 
 
 def main() -> None:
@@ -273,9 +449,11 @@ def main() -> None:
     scorecard = build_scorecard(weights, low_max, medium_max)
     mode = st.context.theme.type or "light"
 
-    (tab_applicant,) = st.tabs(["Score an applicant"])
+    tab_applicant, tab_portfolio = st.tabs(["Score an applicant", "Score a portfolio"])
     with tab_applicant:
         applicant_tab(scorecard, mode)
+    with tab_portfolio:
+        portfolio_tab(weights, low_max, medium_max)
 
 
 main()
