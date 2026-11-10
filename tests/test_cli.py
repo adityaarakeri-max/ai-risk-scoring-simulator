@@ -21,10 +21,10 @@ def test_generate_then_score(tmp_path, capsys):
 
     rows = list(csv.DictReader(out.open()))
     assert len(rows) == 30
-    assert {"risk_score", "risk_band", "ai_explanation"} <= set(rows[0])
+    assert {"risk_score", "risk_band", "explanation"} <= set(rows[0])
     for row in rows:
         assert row["risk_band"] in {"Low", "Medium", "High"}
-        assert (row["ai_explanation"] != "") == (row["risk_band"] == "High")
+        assert (row["explanation"] != "") == (row["risk_band"] == "High")
     assert "Scored 30 applications" in capsys.readouterr().out
 
 
