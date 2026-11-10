@@ -68,7 +68,11 @@ class Benchmark:
     logistic: Discrimination
     weights: pd.DataFrame
     suggested_weights: dict
-    test_size: int
+    test_scores: pd.DataFrame  # defaulted + each model's score on the held-out test set
+
+    @property
+    def test_size(self) -> int:
+        return len(self.test_scores)
 
 
 def _largest_remainder(shares: pd.Series, total: int) -> pd.Series:
@@ -125,11 +129,19 @@ def benchmark(
         index=features.columns,
     )
 
+    test_scores = pd.DataFrame(
+        {
+            "defaulted": y_test.to_numpy(),
+            "scorecard": score_portfolio(df_test, scorecard)["risk_score"].to_numpy(),
+            "reweighted": score_portfolio(df_test, reweighted)["risk_score"].to_numpy(),
+            "logistic": model.predict_proba(x_test)[:, 1],
+        }
+    )
     return Benchmark(
-        scorecard=discrimination(y_test, score_portfolio(df_test, scorecard)["risk_score"]),
-        reweighted=discrimination(y_test, score_portfolio(df_test, reweighted)["risk_score"]),
-        logistic=discrimination(y_test, model.predict_proba(x_test)[:, 1]),
+        scorecard=discrimination(test_scores["defaulted"], test_scores["scorecard"]),
+        reweighted=discrimination(test_scores["defaulted"], test_scores["reweighted"]),
+        logistic=discrimination(test_scores["defaulted"], test_scores["logistic"]),
         weights=weights,
         suggested_weights={k: int(v) for k, v in suggested.items()},
-        test_size=len(y_test),
+        test_scores=test_scores,
     )
