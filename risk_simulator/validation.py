@@ -10,9 +10,14 @@ Standard credit-risk checks:
 from dataclasses import dataclass
 
 import pandas as pd
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score, roc_curve
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 
-from .scoring import BANDS
+from .pipeline import score_portfolio
+from .scoring import BANDS, DEFAULT_SCORECARD, Scorecard
 
 
 @dataclass(frozen=True)
@@ -54,3 +59,77 @@ def band_table(scored: pd.DataFrame) -> pd.DataFrame:
 def is_rank_ordered(table: pd.DataFrame) -> bool:
     rates = table["default_rate"].dropna()
     return bool(rates.is_monotonic_increasing and rates.is_unique)
+
+
+@dataclass(frozen=True)
+class Benchmark:
+    scorecard: Discrimination
+    reweighted: Discrimination
+    logistic: Discrimination
+    weights: pd.DataFrame
+    suggested_weights: dict
+    test_size: int
+
+
+def _largest_remainder(shares: pd.Series, total: int) -> pd.Series:
+    raw = shares * total
+    rounded = raw.astype(int)
+    shortfall = total - rounded.sum()
+    for key in (raw - rounded).sort_values(ascending=False).index[:shortfall]:
+        rounded[key] += 1
+    return rounded
+
+
+def benchmark(
+    df: pd.DataFrame,
+    scorecard: Scorecard = DEFAULT_SCORECARD,
+    test_fraction: float = 0.3,
+    seed: int = 0,
+) -> Benchmark:
+    """Compare the scorecard with a logistic regression fitted to the same five factors.
+
+    The logistic model is a challenger, not a replacement: it shows how much
+    discrimination the factors could deliver and which ones the scorecard
+    over- or under-weights. Suggested weights are each factor's share of the
+    model's standardised coefficients, rescaled to 100 points.
+    """
+    _require_both_outcomes(df["defaulted"])
+    features = pd.DataFrame({f.key: f.measure(df) for f in scorecard.factors})
+    x_train, x_test, y_train, y_test, _, df_test = train_test_split(
+        features,
+        df["defaulted"],
+        df,
+        test_size=test_fraction,
+        stratify=df["defaulted"],
+        random_state=seed,
+    )
+
+    model = make_pipeline(StandardScaler(), LogisticRegression(max_iter=1000))
+    model.fit(x_train, y_train)
+    coefs = pd.Series(model[-1].coef_[0], index=features.columns)
+
+    shares = coefs.abs() / coefs.abs().sum()
+    suggested = _largest_remainder(shares, 100)
+    reweighted = scorecard.with_weights(suggested.to_dict())
+
+    weights = pd.DataFrame(
+        {
+            "label": [f.label for f in scorecard.factors],
+            "scorecard_share": [f.max_points / scorecard.max_points for f in scorecard.factors],
+            "model_share": shares.values,
+            "suggested_points": suggested.values,
+            "direction_agrees": [
+                (coefs[f.key] > 0) == f.higher_is_riskier for f in scorecard.factors
+            ],
+        },
+        index=features.columns,
+    )
+
+    return Benchmark(
+        scorecard=discrimination(y_test, score_portfolio(df_test, scorecard)["risk_score"]),
+        reweighted=discrimination(y_test, score_portfolio(df_test, reweighted)["risk_score"]),
+        logistic=discrimination(y_test, model.predict_proba(x_test)[:, 1]),
+        weights=weights,
+        suggested_weights={k: int(v) for k, v in suggested.items()},
+        test_size=len(y_test),
+    )

@@ -3,7 +3,14 @@ import pytest
 
 from risk_simulator.data import generate_portfolio
 from risk_simulator.pipeline import score_portfolio
-from risk_simulator.validation import band_table, discrimination, is_rank_ordered, roc_points
+from risk_simulator.validation import (
+    _largest_remainder,
+    band_table,
+    benchmark,
+    discrimination,
+    is_rank_ordered,
+    roc_points,
+)
 
 
 def test_perfect_separation():
@@ -66,3 +73,37 @@ def test_default_scorecard_rank_orders_simulated_portfolio():
     assert is_rank_ordered(band_table(scored))
     result = discrimination(scored["defaulted"], scored["risk_score"])
     assert 0.3 < result.gini < 0.7
+
+
+@pytest.fixture(scope="module")
+def large_benchmark():
+    return benchmark(generate_portfolio(10_000, seed=42))
+
+
+def test_suggested_weights_sum_to_100(large_benchmark):
+    assert sum(large_benchmark.suggested_weights.values()) == 100
+
+
+def test_model_agrees_on_every_factor_direction(large_benchmark):
+    assert large_benchmark.weights["direction_agrees"].all()
+
+
+def test_fitted_model_beats_hand_set_weights_on_large_sample(large_benchmark):
+    assert large_benchmark.logistic.gini > large_benchmark.scorecard.gini
+    assert large_benchmark.reweighted.gini > large_benchmark.scorecard.gini
+
+
+def test_benchmark_flags_employment_as_overweighted(large_benchmark):
+    # The simulated true model gives employment history very little influence.
+    assert large_benchmark.suggested_weights["employment_years"] < 20
+
+
+def test_largest_remainder_rounding_preserves_total():
+    shares = pd.Series({"a": 1 / 3, "b": 1 / 3, "c": 1 / 3})
+    assert _largest_remainder(shares, 100).sum() == 100
+
+
+def test_benchmark_needs_both_outcomes():
+    df = generate_portfolio(200).assign(defaulted=0)
+    with pytest.raises(ValueError):
+        benchmark(df)
