@@ -27,13 +27,18 @@ def _require_file(path: Path) -> None:
 
 def _score(args: argparse.Namespace) -> None:
     _require_file(args.input)
+    max_ai = 0 if args.no_ai else args.max_ai_calls
     try:
-        counts = pipeline.run(args.input, args.out)
+        summary = pipeline.run(args.input, args.out, max_ai_calls=max_ai)
     except data.DataValidationError as exc:
         raise SystemExit(f"{args.input}: {exc}") from exc
-    total = sum(counts.values())
+    total = sum(summary.band_counts.values())
     print(f"Scored {total} applications -> {args.out}")
-    print("  ".join(f"{band}: {n}" for band, n in counts.items()))
+    print("  ".join(f"{band}: {n}" for band, n in summary.band_counts.items()))
+    print(
+        f"High-risk explanations: {summary.ai_explanations} from Claude, "
+        f"{summary.template_explanations} from the template"
+    )
 
 
 def _validate(args: argparse.Namespace) -> None:
@@ -88,6 +93,13 @@ def build_parser() -> argparse.ArgumentParser:
     score = sub.add_parser("score", help="score an applications CSV")
     score.add_argument("input", type=Path, nargs="?", default=Path("data/sample_applications.csv"))
     score.add_argument("--out", type=Path, default=Path("output/risk_scored_results.csv"))
+    score.add_argument(
+        "--max-ai-calls",
+        type=int,
+        default=25,
+        help="cap on Claude calls per run; remaining High-risk rows use the template",
+    )
+    score.add_argument("--no-ai", action="store_true", help="use template explanations only")
     score.set_defaults(func=_score)
 
     val = sub.add_parser("validate", help="measure scorecard performance against outcomes")

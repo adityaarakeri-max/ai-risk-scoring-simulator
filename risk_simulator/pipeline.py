@@ -1,11 +1,12 @@
 """Score a portfolio of applications, explain High-risk ones, and write the results."""
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
 
 from .data import load_applications, write_csv
-from .explain import generate_explanation
+from .explain import explain
 from .scoring import BANDS, DEFAULT_SCORECARD, Scorecard
 
 
@@ -21,15 +22,42 @@ def score_portfolio(df: pd.DataFrame, scorecard: Scorecard = DEFAULT_SCORECARD) 
     return out
 
 
-def run(input_path: Path, output_path: Path, scorecard: Scorecard = DEFAULT_SCORECARD) -> dict:
+@dataclass(frozen=True)
+class RunSummary:
+    band_counts: dict
+    ai_explanations: int
+    template_explanations: int
+
+
+def run(
+    input_path: Path,
+    output_path: Path,
+    scorecard: Scorecard = DEFAULT_SCORECARD,
+    max_ai_calls: int = 25,
+) -> RunSummary:
+    """Score every application; explain High-risk ones, using AI for at most max_ai_calls."""
     df = load_applications(input_path)
     out = score_portfolio(df, scorecard)
 
-    explanations = []
+    texts, sources = [], []
+    ai_used = 0
     for record, band in zip(df.to_dict("records"), out["risk_band"], strict=True):
-        explanations.append(generate_explanation(scorecard.score(record)) if band == "High" else "")
-    out["ai_explanation"] = explanations
+        if band != "High":
+            texts.append("")
+            sources.append("")
+            continue
+        result = explain(scorecard.score(record), use_ai=ai_used < max_ai_calls)
+        ai_used += result.source == "ai"
+        texts.append(result.text)
+        sources.append(result.source)
 
+    out["explanation"] = texts
+    out["explanation_source"] = sources
     write_csv(out, output_path)
+
     counts = out["risk_band"].value_counts()
-    return {band: int(counts.get(band, 0)) for band in BANDS}
+    return RunSummary(
+        band_counts={band: int(counts.get(band, 0)) for band in BANDS},
+        ai_explanations=ai_used,
+        template_explanations=sources.count("template"),
+    )
