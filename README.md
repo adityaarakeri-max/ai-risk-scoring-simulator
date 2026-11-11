@@ -3,6 +3,11 @@
 [![CI](https://github.com/adityaarakeri-max/ai-risk-scoring-simulator/actions/workflows/ci.yml/badge.svg)](https://github.com/adityaarakeri-max/ai-risk-scoring-simulator/actions/workflows/ci.yml)
 ![Python 3.11–3.14](https://img.shields.io/badge/python-3.11%E2%80%933.14-blue)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
+[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://adi-ai-risk-scoring.streamlit.app)
+
+**Try it live: [adi-ai-risk-scoring.streamlit.app](https://adi-ai-risk-scoring.streamlit.app)**. No install
+needed. Score an applicant, upload a portfolio, or tune the scorecard and
+watch the validation metrics move.
 
 A small credit-risk scoring tool built the way a lending team would want it: a
 transparent, rules-based scorecard makes every decision, the scorecard is
