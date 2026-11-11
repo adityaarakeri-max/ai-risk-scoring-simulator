@@ -19,12 +19,14 @@ def run(input_path: Path, output_path: Path) -> dict:
         if scored.risk_band == "High":
             explanation = generate_explanation(scored)
 
-        rows.append({
-            **record,
-            "risk_score": scored.score,
-            "risk_band": scored.risk_band,
-            "ai_explanation": explanation,
-        })
+        rows.append(
+            {
+                **record,
+                "risk_score": scored.score,
+                "risk_band": scored.risk_band,
+                "ai_explanation": explanation,
+            }
+        )
 
     write_csv(rows, output_path)
     return band_counts
