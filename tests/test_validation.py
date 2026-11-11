@@ -107,3 +107,12 @@ def test_benchmark_needs_both_outcomes():
     df = generate_portfolio(200).assign(defaulted=0)
     with pytest.raises(ValueError):
         benchmark(df)
+
+
+def test_benchmark_exposes_test_set_scores(large_benchmark):
+    scores = large_benchmark.test_scores
+    assert list(scores.columns) == ["defaulted", "scorecard", "reweighted", "logistic"]
+    assert large_benchmark.test_size == len(scores) == 3_000
+    assert scores["logistic"].between(0, 1).all()
+    recomputed = discrimination(scores["defaulted"], scores["scorecard"])
+    assert recomputed == large_benchmark.scorecard
